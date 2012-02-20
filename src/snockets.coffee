@@ -150,10 +150,38 @@ module.exports = class Snockets
                 requireTree itemPath
                 q.unwaitFor itemPath
 
+    escapeFile = (string) ->
+      string = string.replace(/\\/g, '\\\\').replace(/(['"])/g, '\\$1')
+      string = string.replace(/\n/, "\\\n") unless filePath.match(/\.coffee$/)
+      return string
+
+    include = (relPath, substr, escape=off) =>
+      # i'm setting random holder (just in case of unwanted collisions)
+      q.waitFor hold = Math.random()
+      onFound = (incPath) =>
+        @readFile incPath, flags, (err, fileChanged) =>
+          return callback err if err
+          if fileChanged then graphChanged = true
+          replaceTo = @cache[incPath].data.toString('utf8')
+          replaceTo = escapeFile(replaceTo) if escape
+          # here we are casting buffer to utf8... any need to cast it back?
+          @cache[filePath].data = @cache[filePath].data.toString('utf8').
+            replace(substr, replaceTo)
+          q.unwaitFor hold
+      
+      relName = stripExt relPath
+      if relName.match EXPLICIT_PATH
+        onFound relPath
+      else
+        incName = path.join path.dirname(filePath), relName
+        @findMatchingFile incName, flags, (err, incPath) ->
+          return callback err if err
+          onFound incPath
+    
     @readFile filePath, flags, (err, fileChanged) =>
       return callback err if err
       if fileChanged then graphChanged = true
-      for directive in parseDirectives(@cache[filePath].data.toString 'utf8')
+      for [substr, directive] in parseDirectives(@cache[filePath].data.toString 'utf8')
         words = directive.replace(/['"]/g, '').split /\s+/
         [command, relPaths...] = words
 
@@ -163,6 +191,11 @@ module.exports = class Snockets
           when 'require_tree'
             for relPath in relPaths
               requireTree path.join path.dirname(filePath), relPath
+          when 'include'
+            # multiple file including is not supported :(
+            include relPaths[0], substr
+          when 'include_str'
+            include relPaths[0], substr, on
 
       q.finalize()
 
@@ -290,7 +323,7 @@ parseDirectives = (code) ->
   code = code.replace /[\r\t ]+$/gm, '\n'  # fix for issue #2
   return [] unless match = HEADER.exec(code)
   header = match[0]
-  match[1] while match = DIRECTIVE.exec header
+  match while match = DIRECTIVE.exec header
 
 stripExt = (filePath) ->
   if path.extname(filePath) in jsExts()
